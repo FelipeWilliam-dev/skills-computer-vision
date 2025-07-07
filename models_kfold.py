@@ -16,8 +16,12 @@ warnings.filterwarnings("ignore")
 def load_data(data_path, img_size):
     transform = transforms.Compose([
         transforms.Resize(img_size),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomRotation(15),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        #transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
 
     # Carregar o dataset completo
@@ -114,26 +118,32 @@ def main():
                    'vit_base_patch16_224']
 
     IMG_SIZE = (224, 224)
-    BATCH_SIZE = 40
-    MODEL_NAME = 'beit_base_patch16_224'
-    DATA_PATH = './CIFAR-10/cifar-10-python/'
-    EPOCHS = 10
-    LEARNING_RATE = 0.001  # 5e-5
+    BATCH_SIZE = 32
+    MODEL_NAME = 'convnext_base'
+    DATA_PATH = './Dataset3/vehicle/'
+    EPOCHS = 15
+    LEARNING_RATE = 0.0001  # 5e-5
     N_SPLITS = 5
-    SUBSET_SIZE = 1000
+    #SUBSET_SIZE = 1500
 
     print('- - - - - Carregando os  dados - - - - - -')
-    full_dataset, num_classes = load_data2(DATA_PATH, IMG_SIZE)
+    #full_dataset, num_classes = load_data2(DATA_PATH, IMG_SIZE)
+    dataset, num_classes = load_data(DATA_PATH, IMG_SIZE)
+
+    targets = dataset.targets
+
+    kf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=42)
+
 
     # --- INÍCIO DO BLOCO DE ALTERAÇÃO ---
-    print(f'Criando um subconjunto estratificado de {SUBSET_SIZE} imagens.')
+    #print(f'Criando um subconjunto estratificado de {SUBSET_SIZE} imagens.')
     # Gerar índices para realizar a divisão estratificada
-    indices = list(range(len(full_dataset)))
-    targets = full_dataset.targets
+    #indices = list(range(len(full_dataset)))
+    #targets = full_dataset.targets
 
     # Usar train_test_split para obter um subconjunto estratificado de índices
     # O segundo valor de retorno (com '_') é descartado, pois não precisamos dele
-    subset_indices, _ = train_test_split(
+    """subset_indices, _ = train_test_split(
         indices,
         train_size=SUBSET_SIZE,  # Define o tamanho absoluto do subset
         stratify=targets,
@@ -145,7 +155,7 @@ def main():
     # Precisamos dos alvos (targets) correspondentes ao nosso novo subconjunto para o StratifiedKFold
     subset_targets = [targets[i] for i in subset_indices]
 
-    kf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=42)
+    kf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=42)"""
 
 
     print('- - - - - - - - - - - - - - - - - - - - -')
@@ -160,7 +170,7 @@ def main():
 
     print(f'\n- - - - - Iniciando Treinamento com Validação Cruzada Usando o modelo: {MODEL_NAME} - - - - -')
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(np.arange(len(dataset)), subset_targets)):
+    for fold, (train_idx, val_idx) in enumerate(kf.split(np.arange(len(dataset)), targets)):
         print(f"\n- - - - Fold {fold + 1}/{N_SPLITS} - - - -")
 
         train_subset = Subset(dataset, train_idx)
@@ -223,6 +233,82 @@ def main():
             f.write(f"{key}: {value}\n")
 
     print(f"\nRelatório final salvo em: {results_filename}")
+
+
+def main_percentage_split():
+    # --- HIPERPARÂMETROS ---
+    IMG_SIZE = (224, 224)
+    BATCH_SIZE = 30  # Mantendo o batch size maior para performance
+    MODEL_NAME = 'convnext_base'
+    DATA_PATH = './Dataset3/vehicle/'
+    EPOCHS = 15
+    LEARNING_RATE = 0.0001
+
+    # ALTERAÇÃO: Definimos o tamanho da divisão de validação (20%)
+    VALIDATION_SPLIT_SIZE = 0.20
+
+    print('- - - - - Carregando os dados - - - - - -')
+    dataset, num_classes = load_data(DATA_PATH, IMG_SIZE)
+
+    print('- - - - - Criando a divisão treino/validação - - - - -')
+
+    # Pegamos os índices e os alvos (labels) para a divisão estratificada
+    indices = np.arange(len(dataset))
+    targets = dataset.targets
+
+    # ALTERAÇÃO: Usamos train_test_split para criar uma única divisão
+    train_indices, val_indices = train_test_split(
+        indices,
+        test_size=VALIDATION_SPLIT_SIZE,  # Usa o percentual que definimos
+        stratify=targets,  # Garante que a proporção de classes seja a mesma nos dois conjuntos
+        random_state=42  # Para resultados reprodutíveis
+    )
+
+    # Criamos os Subsets a partir dos índices gerados
+    train_subset = Subset(dataset, train_indices)
+    val_subset = Subset(dataset, val_indices)
+
+    print('- - - - - - - - - - - - - - - - - - - - -')
+    print(f"Número de classes: {num_classes}")
+    print(f"Total de imagens: {len(dataset)}")
+    print(f"Imagens de Treino: {len(train_subset)}")
+    print(f"Imagens de Validação: {len(val_subset)}")
+    print('- - - - - - - - - - - - - - - - - - - - -')
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Dispositivo usado: {device}")
+
+    # Criamos os DataLoaders
+    train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=8)
+    val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True, num_workers=8)
+
+    # Definimos o modelo
+    model = define_model(MODEL_NAME, num_classes)
+    if int(torch.__version__.split('.')[0]) >= 2:
+        model = torch.compile(model)
+        print("Modelo compilado com torch.compile() para maior performance.")
+
+    print(
+        f'\n- - - - - Iniciando Treinamento com Percentage Split ({100 - VALIDATION_SPLIT_SIZE * 100}/{VALIDATION_SPLIT_SIZE * 100}) - - - - -')
+
+    # ALTERAÇÃO: Chamamos a função de treino apenas uma vez, sem loop de fold
+    final_avg_accuracy = train_and_validate(
+        model,
+        train_loader,
+        val_loader,
+        device,
+        epochs=EPOCHS,
+        lr=LEARNING_RATE
+    )
+
+    print(f"\n- - - - Resultados Finais do Percentage Split - - - -")
+    print(f"Modelo treinado: {MODEL_NAME}")
+    print(f"Acurácia Média das épocas no conjunto de validação: {final_avg_accuracy:.2f}%")
+
+    # Você pode querer salvar um relatório diferente ou adaptar o atual
+    print("\nTreinamento concluído.")
+
+
 if __name__ == "__main__":
-    main()
+    main_percentage_split()
 

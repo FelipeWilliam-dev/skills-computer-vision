@@ -1,1 +1,13 @@
 CIFAR-10
+Dataset1.zip
+Dataset1
+Dataset2.zip
+Dataset2
+Dataset3.zip
+Dataset3
+Dataset4.zip
+Dataset4
+
+*.txt
+
+*.idea
