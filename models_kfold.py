@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 from torch.cuda.amp import autocast, GradScaler
 from timm import create_model
-from sklearn.model_selection import StratifiedKFold, train_test_split #<- importação atualizada
+from sklearn.model_selection import StratifiedKFold, train_test_split
 import numpy as np
 from datetime import datetime
 from tqdm import tqdm
@@ -19,21 +19,30 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-def load_data(data_path, img_size):
-    transform = transforms.Compose([
+# Definindo as transformações separadamente
+def get_train_transforms(img_size):
+    return transforms.Compose([
         transforms.Resize(img_size),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomRotation(15),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        #transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
 
-    # Carregar o dataset completo
+def get_val_transforms(img_size):
+    return transforms.Compose([
+        transforms.Resize(img_size),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+def load_data_with_transforms(data_path, img_size, transform):
+    """
+    Carrega o dataset usando um conjunto de transformações específico.
+    """
     dataset = datasets.ImageFolder(data_path, transform=transform)
     num_classes = len(dataset.classes)
-
     return dataset, num_classes
 
 def load_data2(data_path, img_size):
@@ -42,11 +51,8 @@ def load_data2(data_path, img_size):
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
-
-    # Carregar o dataset completo
-    dataset = datasets.CIFAR10(root=data_path, train=True, transform=transform) #<- treinamento definido
+    dataset = datasets.CIFAR10(root=data_path, train=True, transform=transform)
     num_classes = len(dataset.classes)
-
     return dataset, num_classes
 
 def define_model(model_name, num_classes):
@@ -67,7 +73,6 @@ def train_and_validate(model, train_loader, val_loader, device, epochs=10, lr=5e
         running_loss = 0.0
         train_pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs} [Train]", leave=True)
         for images, labels in train_pbar:
-            # CORREÇÃO APLICADA AQUI
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
@@ -91,7 +96,6 @@ def train_and_validate(model, train_loader, val_loader, device, epochs=10, lr=5e
         total = 0
         with torch.no_grad():
             for images, labels in tqdm(val_loader, desc=f"Epoch {epoch + 1}/{epochs} [Validação]", leave=False):
-                # CORREÇÃO APLICADA AQUI TAMBÉM
                 images = images.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
 
@@ -116,7 +120,6 @@ def train_and_validate(model, train_loader, val_loader, device, epochs=10, lr=5e
     return best_val_acc
 
 def generate_report(model, data_loader, device, class_names):
-    # ... (cole a função generate_report da nossa conversa anterior aqui) ...
     model.eval()
     y_true = []
     y_pred = []
@@ -149,156 +152,47 @@ def generate_report(model, data_loader, device, class_names):
     print(f"Matriz de confusão salva como '{os.path.abspath(report_path)}'")
     plt.show()
 
-def main():
-    models_list = ['beit_base_patch16_224',
-                   'convformer_s18',
-                   'convnext_base',
-                   'deit_base_patch16_224',
-                   'efficientformer_l1',
-                   'maxvit_tiny_tf_224',
-                   'mixer_b16_224','mobilevit_xs',
-                   'swinv2_base_window12_192_22k',
-                   'vit_base_patch16_224']
-
-    IMG_SIZE = (224, 224)
-    BATCH_SIZE = 32
-    MODEL_NAME = 'convnext_base'
-    DATA_PATH = './Dataset3/vehicle/'
-    EPOCHS = 15
-    LEARNING_RATE = 0.0001  # 5e-5
-    N_SPLITS = 5
-    #SUBSET_SIZE = 1500
-
-    print('- - - - - Carregando os  dados - - - - - -')
-    #full_dataset, num_classes = load_data2(DATA_PATH, IMG_SIZE)
-    dataset, num_classes = load_data(DATA_PATH, IMG_SIZE)
-
-    targets = dataset.targets
-
-    kf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=42)
-
-
-    # --- INÍCIO DO BLOCO DE ALTERAÇÃO ---
-    #print(f'Criando um subconjunto estratificado de {SUBSET_SIZE} imagens.')
-    # Gerar índices para realizar a divisão estratificada
-    #indices = list(range(len(full_dataset)))
-    #targets = full_dataset.targets
-
-    # Usar train_test_split para obter um subconjunto estratificado de índices
-    # O segundo valor de retorno (com '_') é descartado, pois não precisamos dele
-    """subset_indices, _ = train_test_split(
-        indices,
-        train_size=SUBSET_SIZE,  # Define o tamanho absoluto do subset
-        stratify=targets,
-        random_state=42  # Para resultados reprodutíveis
-    )
-
-    dataset = Subset(full_dataset, subset_indices)
-
-    # Precisamos dos alvos (targets) correspondentes ao nosso novo subconjunto para o StratifiedKFold
-    subset_targets = [targets[i] for i in subset_indices]
-
-    kf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=42)"""
-
-
-    print('- - - - - - - - - - - - - - - - - - - - -')
-    print(f"Número de classes: {num_classes}")
-    print(f"Quantidade total de imagens no dataset: {len(dataset)}")
-    print('- - - - - - - - - - - - - - - - - - - - -')
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Dispositivo usado: {device}")
-
-    accuracies = []
-
-    print(f'\n- - - - - Iniciando Treinamento com Validação Cruzada Usando o modelo: {MODEL_NAME} - - - - -')
-
-    for fold, (train_idx, val_idx) in enumerate(kf.split(np.arange(len(dataset)), targets)):
-        print(f"\n- - - - Fold {fold + 1}/{N_SPLITS} - - - -")
-
-        train_subset = Subset(dataset, train_idx)
-        val_subset = Subset(dataset, val_idx)
-
-        num_train_files = len(train_subset)
-        num_val_files = len(val_subset)
-        print(f"Imagens para Treinamento neste fold: {num_train_files}")
-        print(f"Imagens para Validação neste fold: {num_val_files}")
-
-        train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=4)
-        val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True, num_workers=4)
-
-        model = define_model(MODEL_NAME, num_classes)
-        print(f"Treinando fold {fold + 1} por {EPOCHS} épocas...")
-
-        val_acc = train_and_validate(
-            model,
-            train_loader,
-            val_loader,
-            device,
-            epochs=EPOCHS,
-            lr=LEARNING_RATE
-        )
-        accuracies.append(val_acc)
-        print(f"Acurácia Média - fold[{fold + 1}]: {val_acc:.2f}%")
-
-    print(f"\n- - - - Resultados Finais da Validação Cruzada ({N_SPLITS} folds) - - - -")
-    mean_acc = np.mean(accuracies)
-    std_acc = np.std(accuracies)
-
-    print(f"- - - - Resultados da Validação Cruzada - - - -")
-    print(f"Modelo treinado: {MODEL_NAME}")
-    print(f"Acurácia Média: {mean_acc:.2f}%")
-    print(f"Desvio Padrão da Acurácia: {std_acc:.4f}%")
-
-    # --- Salvando o relatório final em um arquivo .txt ---
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_filename = f'final_report_{MODEL_NAME}_{timestamp}.txt'
-
-    hyperparameters = {
-        'Tamanho da Imagem': IMG_SIZE,
-        'Tamanho do Batch': BATCH_SIZE,
-        'Épocas': EPOCHS,
-        'Taxa de Aprendizagem': LEARNING_RATE,
-        'Número de Folds (Splits)': N_SPLITS,
-        'Dispositivo': str(device)
-    }
-
-    with open(results_filename, 'w', encoding='utf-8') as f:
-        f.write(f"--- Relatório do Treino ({timestamp}) ---\n")
-        f.write(f"Modelo: {MODEL_NAME}\n\n")
-
-        f.write("== Resultados Finais ==\n")
-        f.write(f"Acurácia Média Final: {mean_acc:.2f}%\n")
-        f.write(f"Desvio Padrão da Acurácia: {std_acc:.4f}\n\n")
-
-        f.write("== Hiperparâmetros ==\n")
-        for key, value in hyperparameters.items():
-            f.write(f"{key}: {value}\n")
-
-    print(f"\nRelatório final salvo em: {results_filename}")
-
-
 def main_percentage_split():
     # --- HIPERPARÂMETROS ---
     IMG_SIZE = (224, 224)
     BATCH_SIZE = 30
     MODEL_NAME = 'convnext_base'
-    DATA_PATH = './Dataset3/vehicle/'
+    DATA_PATH = './Dataset3/vehicle/' # Pasta raiz contendo as pastas das classes
     EPOCHS = 15
     LEARNING_RATE = 0.0001
-    VALIDATION_SPLIT_SIZE = 0.20
+    VALIDATION_SPLIT_SIZE = 0.20 # Porcentagem para o conjunto de validação
 
-    # --- Carregando os dados e criando a divisão ---
-    print('- - - - - Carregando os dados e criando a divisão - - - - -')
-    dataset, num_classes = load_data(DATA_PATH, IMG_SIZE)
-    indices = np.arange(len(dataset))
-    targets = dataset.targets
+    # --- Carregando o dataset completo DUAS VEZES, com transformações diferentes ---
+    print('- - - - - Carregando datasets com transformações distintas - - - - -')
+    
+    # 1. Dataset para extrair índices e classes (pode usar qualquer transformação inicial)
+    # Usamos as transformações de validação para esta instância inicial, pois são determinísticas
+    base_dataset, num_classes = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_val_transforms(IMG_SIZE))
+
+    # Obtém os índices e os targets (labels) do dataset para a divisão estratificada
+    indices = np.arange(len(base_dataset))
+    targets = base_dataset.targets 
+
+    # Realiza a divisão estratificada dos ÍNDICES
     train_indices, val_indices = train_test_split(
         indices, test_size=VALIDATION_SPLIT_SIZE, stratify=targets, random_state=42
     )
-    train_subset = Subset(dataset, train_indices)
-    val_subset = Subset(dataset, val_indices)
-    print(f"Total: {len(dataset)}, Treino: {len(train_subset)}, Validação: {len(val_subset)}")
+    
+    # Obtém os nomes das classes diretamente do dataset base
+    class_names = base_dataset.classes
+
+    # 2. Criar o dataset de TREINO com transformações de aumento de dados
+    train_full_dataset, _ = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_train_transforms(IMG_SIZE))
+    train_subset = Subset(train_full_dataset, train_indices)
+
+    # 3. Criar o dataset de VALIDAÇÃO com transformações determinísticas (sem aumento de dados)
+    val_full_dataset, _ = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_val_transforms(IMG_SIZE))
+    val_subset = Subset(val_full_dataset, val_indices)
+    
+    print(f"Total de amostras no dataset: {len(base_dataset)}")
+    print(f"Amostras para Treino (com aumento de dados): {len(train_subset)}")
+    print(f"Amostras para Validação (sem aumento de dados): {len(val_subset)}")
+
 
     # --- Configurando caminhos e dispositivo ---
     save_dir = 'Save_Models'
@@ -313,7 +207,6 @@ def main_percentage_split():
     val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True, num_workers=8)
 
     # --- Treinamento do Modelo ---
-    # CORREÇÃO: Definimos apenas o modelo que será treinado
     model = define_model(MODEL_NAME, num_classes)
 
     if int(torch.__version__.split('.')[0]) >= 2:
@@ -337,21 +230,17 @@ def main_percentage_split():
     # --- Geração do Relatório Pós-Treino ---
     print("\n- - - - - Gerando relatório com o melhor modelo salvo - - - - -")
 
-    # CORREÇÃO: Criamos o modelo de relatório aqui e o compilamos
     report_model = define_model(MODEL_NAME, num_classes)
     if int(torch.__version__.split('.')[0]) >= 2:
-        report_model = torch.compile(report_model)  # Compila o modelo antes de carregar!
+        report_model = torch.compile(report_model)
 
-    # Agora o carregamento funcionará
     report_model.load_state_dict(torch.load(model_save_path))
     report_model.to(device)
 
-    # Gera o relatório de classificação e a matriz de confusão
-    generate_report(report_model, val_loader, device, dataset.classes)
+    # Passa os nomes das classes corretos para o relatório
+    generate_report(report_model, val_loader, device, class_names)
 
     print("\nTreinamento concluído.")
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main_percentage_split()
-
