@@ -1,3 +1,5 @@
+import os
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -9,6 +11,10 @@ from sklearn.model_selection import StratifiedKFold, train_test_split #<- import
 import numpy as np
 from datetime import datetime
 from tqdm import tqdm
+from sklearn.metrics import classification_report, confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -47,22 +53,25 @@ def define_model(model_name, num_classes):
     model = create_model(model_name, pretrained=True, num_classes=num_classes)
     return model
 
-
-def train_and_validate(model, train_loader, val_loader, device, epochs=10, lr=5e-5):
+def train_and_validate(model, train_loader, val_loader, device, epochs=10, lr=5e-5, save_path=None):
     model.to(device)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     optimizer = optim.AdamW(model.parameters(), lr=lr)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader) * epochs)
     scaler = GradScaler()
 
-    accuracies = []
+    best_val_acc = 0.0
 
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
-        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs} [Train]", leave=True )
+        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs} [Train]", leave=True)
         for images, labels in train_pbar:
-            images, labels = images.to(device), labels.to(device)
-            optimizer.zero_grad()
+            # CORREÇÃO APLICADA AQUI
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+
+            optimizer.zero_grad(set_to_none=True)
 
             with autocast():
                 outputs = model(images)
@@ -71,26 +80,23 @@ def train_and_validate(model, train_loader, val_loader, device, epochs=10, lr=5e
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
+            scheduler.step()
             running_loss += loss.item()
-
             train_pbar.set_postfix(loss=f"{loss.item():.4f}")
 
         avg_loss = running_loss / len(train_loader)
 
         model.eval()
-        val_loss = 0.0
         correct = 0
         total = 0
-        val_pbar = tqdm(val_loader, desc=f"Epoch {epoch + 1}/{epochs} [Validação]", leave=False)
         with torch.no_grad():
-            for images, labels in val_pbar:
-                images, labels = images.to(device), labels.to(device)
+            for images, labels in tqdm(val_loader, desc=f"Epoch {epoch + 1}/{epochs} [Validação]", leave=False):
+                # CORREÇÃO APLICADA AQUI TAMBÉM
+                images = images.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
 
                 with autocast():
                     outputs = model(images)
-                    loss = criterion(outputs, labels)
-
-                val_loss += loss.item()
                 _, predicted = torch.max(outputs, 1)
                 total += labels.size(0)
                 correct += torch.eq(predicted, labels).sum().item()
@@ -99,12 +105,49 @@ def train_and_validate(model, train_loader, val_loader, device, epochs=10, lr=5e
 
         print(f"Epoch [{epoch + 1}/{epochs}] -> Loss: {avg_loss:.4f} | Validation Accuracy: {val_acc:.2f}%")
 
-        accuracies.append(val_acc)
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            if save_path:
+                print(f"🎉 Nova melhor acurácia: {best_val_acc:.2f}%. Salvando modelo em '{save_path}'...")
+                torch.save(model.state_dict(), save_path)
 
     print('- - - - - Treinamento finalizado - - - - -')
 
-    return np.mean(accuracies)  # retorna a acurácia média de cada época
+    return best_val_acc
 
+def generate_report(model, data_loader, device, class_names):
+    # ... (cole a função generate_report da nossa conversa anterior aqui) ...
+    model.eval()
+    y_true = []
+    y_pred = []
+
+    with torch.no_grad():
+        for images, labels in data_loader:
+            images = images.to(device)
+            labels = labels.to(device)
+
+            outputs = model(images)
+            _, predicted = torch.max(outputs, 1)
+
+            y_true.extend(labels.cpu().numpy())
+            y_pred.extend(predicted.cpu().numpy())
+
+    print("\n--- Relatório de Classificação ---")
+    print(classification_report(y_true, y_pred, target_names=class_names, digits=4))
+
+    print("\n--- Matriz de Confusão ---")
+    cm = confusion_matrix(y_true, y_pred)
+    df_cm = pd.DataFrame(cm, index=class_names, columns=class_names)
+
+    plt.figure(figsize=(12, 8))
+    sns.heatmap(df_cm, annot=True, fmt='g', cmap='Blues')
+    plt.xlabel('Classe Prevista')
+    plt.ylabel('Classe Verdadeira')
+    plt.title('Matriz de Confusão')
+    report_path = 'confusion_matrix.png'
+    plt.savefig(report_path)
+    print(f"Matriz de confusão salva como '{os.path.abspath(report_path)}'")
+    plt.show()
 
 def main():
     models_list = ['beit_base_patch16_224',
@@ -181,8 +224,8 @@ def main():
         print(f"Imagens para Treinamento neste fold: {num_train_files}")
         print(f"Imagens para Validação neste fold: {num_val_files}")
 
-        train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=8)
-        val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True, num_workers=8)
+        train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=4)
+        val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True, num_workers=4)
 
         model = define_model(MODEL_NAME, num_classes)
         print(f"Treinando fold {fold + 1} por {EPOCHS} épocas...")
@@ -238,74 +281,74 @@ def main():
 def main_percentage_split():
     # --- HIPERPARÂMETROS ---
     IMG_SIZE = (224, 224)
-    BATCH_SIZE = 30  # Mantendo o batch size maior para performance
+    BATCH_SIZE = 30
     MODEL_NAME = 'convnext_base'
     DATA_PATH = './Dataset3/vehicle/'
     EPOCHS = 15
     LEARNING_RATE = 0.0001
-
-    # ALTERAÇÃO: Definimos o tamanho da divisão de validação (20%)
     VALIDATION_SPLIT_SIZE = 0.20
 
-    print('- - - - - Carregando os dados - - - - - -')
+    # --- Carregando os dados e criando a divisão ---
+    print('- - - - - Carregando os dados e criando a divisão - - - - -')
     dataset, num_classes = load_data(DATA_PATH, IMG_SIZE)
-
-    print('- - - - - Criando a divisão treino/validação - - - - -')
-
-    # Pegamos os índices e os alvos (labels) para a divisão estratificada
     indices = np.arange(len(dataset))
     targets = dataset.targets
-
-    # ALTERAÇÃO: Usamos train_test_split para criar uma única divisão
     train_indices, val_indices = train_test_split(
-        indices,
-        test_size=VALIDATION_SPLIT_SIZE,  # Usa o percentual que definimos
-        stratify=targets,  # Garante que a proporção de classes seja a mesma nos dois conjuntos
-        random_state=42  # Para resultados reprodutíveis
+        indices, test_size=VALIDATION_SPLIT_SIZE, stratify=targets, random_state=42
     )
-
-    # Criamos os Subsets a partir dos índices gerados
     train_subset = Subset(dataset, train_indices)
     val_subset = Subset(dataset, val_indices)
+    print(f"Total: {len(dataset)}, Treino: {len(train_subset)}, Validação: {len(val_subset)}")
 
-    print('- - - - - - - - - - - - - - - - - - - - -')
-    print(f"Número de classes: {num_classes}")
-    print(f"Total de imagens: {len(dataset)}")
-    print(f"Imagens de Treino: {len(train_subset)}")
-    print(f"Imagens de Validação: {len(val_subset)}")
-    print('- - - - - - - - - - - - - - - - - - - - -')
-
+    # --- Configurando caminhos e dispositivo ---
+    save_dir = 'Save_Models'
+    model_save_path = os.path.join(save_dir, f'best_{MODEL_NAME}_split.pth')
+    os.makedirs(save_dir, exist_ok=True)
+    print(f"Modelos serão salvos em: '{os.path.abspath(model_save_path)}'")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Dispositivo usado: {device}")
 
-    # Criamos os DataLoaders
+    # --- DataLoaders ---
     train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=8)
     val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True, num_workers=8)
 
-    # Definimos o modelo
+    # --- Treinamento do Modelo ---
+    # CORREÇÃO: Definimos apenas o modelo que será treinado
     model = define_model(MODEL_NAME, num_classes)
+
     if int(torch.__version__.split('.')[0]) >= 2:
         model = torch.compile(model)
         print("Modelo compilado com torch.compile() para maior performance.")
 
-    print(
-        f'\n- - - - - Iniciando Treinamento com Percentage Split ({100 - VALIDATION_SPLIT_SIZE * 100}/{VALIDATION_SPLIT_SIZE * 100}) - - - - -')
+    print(f'\n- - - - - Iniciando Treinamento - - - - -')
 
-    # ALTERAÇÃO: Chamamos a função de treino apenas uma vez, sem loop de fold
-    final_avg_accuracy = train_and_validate(
+    best_accuracy = train_and_validate(
         model,
         train_loader,
         val_loader,
         device,
         epochs=EPOCHS,
-        lr=LEARNING_RATE
+        lr=LEARNING_RATE,
+        save_path=model_save_path
     )
 
-    print(f"\n- - - - Resultados Finais do Percentage Split - - - -")
-    print(f"Modelo treinado: {MODEL_NAME}")
-    print(f"Acurácia Média das épocas no conjunto de validação: {final_avg_accuracy:.2f}%")
+    print(f"\nA Melhor acurácia de validação alcançada foi: {best_accuracy:.2f}%")
 
-    # Você pode querer salvar um relatório diferente ou adaptar o atual
+    # --- Geração do Relatório Pós-Treino ---
+    print("\n- - - - - Gerando relatório com o melhor modelo salvo - - - - -")
+
+    # CORREÇÃO: Criamos o modelo de relatório aqui e o compilamos
+    report_model = define_model(MODEL_NAME, num_classes)
+    if int(torch.__version__.split('.')[0]) >= 2:
+        report_model = torch.compile(report_model)  # Compila o modelo antes de carregar!
+
+    # Agora o carregamento funcionará
+    report_model.load_state_dict(torch.load(model_save_path))
+    report_model.to(device)
+
+    # Gera o relatório de classificação e a matriz de confusão
+    generate_report(report_model, val_loader, device, dataset.classes)
+
     print("\nTreinamento concluído.")
 
 
