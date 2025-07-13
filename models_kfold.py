@@ -43,6 +43,14 @@ def load_data_with_transforms(data_path, img_size, transform):
     """
     dataset = datasets.ImageFolder(data_path, transform=transform)
     num_classes = len(dataset.classes)
+
+    class_counts = {class_name: 0 for class_name in dataset.classes}
+    for _, label_idx in dataset.samples:
+        class_name = dataset.classes[label_idx]
+        class_counts[class_name] += 1
+
+    for class_name, count in class_counts.items():
+        print(f"- {class_name}: {count} imagens")
     return dataset, num_classes
 
 def load_data2(data_path, img_size):
@@ -155,9 +163,9 @@ def generate_report(model, data_loader, device, class_names):
 def main_percentage_split():
     # --- HIPERPARÂMETROS ---
     IMG_SIZE = (224, 224)
-    BATCH_SIZE = 30
+    BATCH_SIZE = 12
     MODEL_NAME = 'convnext_base'
-    DATA_PATH = './Dataset3/vehicle/' # Pasta raiz contendo as pastas das classes
+    DATA_PATH = './Dataset_tratado2/vehicle/' # Pasta raiz contendo as pastas das classes
     EPOCHS = 15
     LEARNING_RATE = 0.0001
     VALIDATION_SPLIT_SIZE = 0.20 # Porcentagem para o conjunto de validação
