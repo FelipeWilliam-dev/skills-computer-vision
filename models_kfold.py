@@ -16,6 +16,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
 import warnings
+from sklearn.metrics import roc_curve, auc
+from itertools import cycle
 
 warnings.filterwarnings("ignore")
 
@@ -85,8 +87,9 @@ def train_and_validate(model, train_loader, val_loader, device, epochs=10, lr=5e
         model.eval()
         correct = 0
         total = 0
+        val_pbar = tqdm(val_loader, desc=f"Epoch {epoch + 1}/{epochs} [Validação]", leave=False)
         with torch.no_grad():
-            for images, labels in tqdm(val_loader, desc=f"Epoch {epoch + 1}/{epochs} [Validação]", leave=False):
+            for images, labels in val_pbar:
                 images = images.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
 
@@ -98,15 +101,17 @@ def train_and_validate(model, train_loader, val_loader, device, epochs=10, lr=5e
 
         val_acc = 100 * correct / total
 
-        print(f"Epoch [{epoch + 1}/{epochs}] -> Loss: {avg_loss:.4f} | Validation Accuracy: {val_acc:.2f}%")
+        tqdm.write(f"Epoch [{epoch + 1}/{epochs}] -> Loss: {avg_loss:.4f} | Validation Accuracy: {val_acc:.2f}%")
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             if save_path:
-                print(f"🎉 Nova melhor acurácia: {best_val_acc:.2f}%. Salvando modelo em '{save_path}'...")
+                # CORREÇÃO: Usando tqdm.write aqui também
+                tqdm.write(f"🎉 Nova melhor acurácia: {best_val_acc:.2f}%. Salvando modelo em '{save_path}'...")
                 torch.save(model.state_dict(), save_path)
 
-    print('- - - - - Treinamento finalizado - - - - -')
+    # Este print está fora do loop principal de épocas, então pode ser um print normal.
+    print('\n- - - - - Treinamento finalizado - - - - -')
 
     return best_val_acc
 
@@ -143,11 +148,6 @@ def generate_report(model, data_loader, device, class_names):
     print(f"Matriz de confusão salva como '{os.path.abspath(report_path)}'")
     plt.show()
 
-
-from sklearn.metrics import roc_curve, auc
-from itertools import cycle
-
-
 def generate_roc_curves(model, data_loader, device, num_classes, class_names):
     """Gera e plota as curvas ROC para cada classe."""
     model.eval()
@@ -158,7 +158,6 @@ def generate_roc_curves(model, data_loader, device, num_classes, class_names):
         for images, labels in data_loader:
             images = images.to(device)
             outputs = model(images)
-            # Usamos softmax para obter probabilidades
             scores = torch.nn.functional.softmax(outputs, dim=1)
 
             y_true.extend(labels.cpu().numpy())
@@ -196,131 +195,109 @@ def generate_roc_curves(model, data_loader, device, num_classes, class_names):
     print(f"Curvas ROC salvas como '{os.path.abspath('roc_curves.png')}'")
     plt.show()
 
-def main_stratified_kfold():
-    # --- HIPERPARÂMETROS ---
-    IMG_SIZE = (224, 224)
-    BATCH_SIZE = 12
-    MODEL_NAME = 'convnext_base'
-    DATA_PATH = './Dataset_tratado2/vehicle/'
-    EPOCHS = 15
-    LEARNING_RATE = 0.0001
-    N_SPLITS = 5  # Número de folds para a validação cruzada
+def run_stratified_kfold(dev_indices, all_targets, DATA_PATH, IMG_SIZE, BATCH_SIZE, MODEL_NAME, EPOCHS, LEARNING_RATE,
+                         N_SPLITS):
+    """
+    Executa a validação cruzada Stratified K-Fold em um conjunto específico de índices (o conjunto de desenvolvimento).
+    """
+    print("\n--- PASSO 2: Executando Validação Cruzada no Conjunto de Desenvolvimento ---")
 
-    # --- Carregando o dataset base para obter informações ---
-    print('- - - - - Carregando dataset base - - - - -')
-    # Carregamos uma vez para obter os targets para a divisão estratificada
-    base_dataset, num_classes = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_val_transforms(IMG_SIZE))
-    targets = base_dataset.targets
-    class_names = base_dataset.classes
-
-    # --- Inicializando o Stratified K-Fold ---
     skf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=42)
     fold_accuracies = []
 
-    # --- Configurando diretório para salvar os modelos ---
+    dev_targets = all_targets[dev_indices]
+
     save_dir = 'Save_Models_KFold'
     os.makedirs(save_dir, exist_ok=True)
-
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Dispositivo usado: {device}")
+    print(f"Dispositivo para o K-Fold: {device}")
 
-    # --- Loop de Validação Cruzada ---
-    for fold, (train_indices, val_indices) in enumerate(skf.split(np.arange(len(base_dataset)), targets)):
-        print(f"\n- - - - - [ FOLD {fold + 1}/{N_SPLITS} ] - - - - -")
+    for fold, (train_pos_indices, val_pos_indices) in enumerate(skf.split(dev_indices, dev_targets)):
+        print(f"\n- - - - - [ K-FOLD {fold + 1}/{N_SPLITS} ] - - - - -")
 
-        # 1. Criar datasets com as transformações corretas PARA ESTE FOLD
+        train_indices = dev_indices[train_pos_indices]
+        val_indices = dev_indices[val_pos_indices]
+
         train_full_dataset, _ = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_train_transforms(IMG_SIZE))
         train_subset = Subset(train_full_dataset, train_indices)
 
-        val_full_dataset, _ = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_val_transforms(IMG_SIZE))
+        val_full_dataset, num_classes = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_val_transforms(IMG_SIZE))
         val_subset = Subset(val_full_dataset, val_indices)
 
-        print(f"Amostras para Treino: {len(train_subset)}, Amostras para Validação: {len(val_subset)}")
+        print(f"Amostras de Treino do Fold: {len(train_subset)}, Amostras de Validação do Fold: {len(val_subset)}")
 
-        # 2. Criar DataLoaders para este fold
         train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=8)
         val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True, num_workers=8)
 
-        # 3. Criar um NOVO modelo para cada fold
         model = define_model(MODEL_NAME, num_classes)
         if int(torch.__version__.split('.')[0]) >= 2:
             model = torch.compile(model)
 
-        # 4. Treinar e validar o modelo para este fold
         model_save_path = os.path.join(save_dir, f'best_model_fold_{fold + 1}.pth')
-
         best_fold_acc = train_and_validate(
-            model,
-            train_loader,
-            val_loader,
-            device,
-            epochs=EPOCHS,
-            lr=LEARNING_RATE,
-            save_path=model_save_path
+            model, train_loader, val_loader, device, EPOCHS, LEARNING_RATE, model_save_path
         )
         fold_accuracies.append(best_fold_acc)
         print(f"Melhor acurácia para o Fold {fold + 1}: {best_fold_acc:.2f}%")
 
-    # --- Resultados Finais da Validação Cruzada ---
     mean_acc = np.mean(fold_accuracies)
     std_acc = np.std(fold_accuracies)
 
     print(f"\n- - - - - Resultados Finais da Validação Cruzada ({N_SPLITS} folds) - - - - -")
     print(f"Acurácias de cada fold: {[f'{acc:.2f}%' for acc in fold_accuracies]}")
-    print(f"Acurácia Média Final: {mean_acc:.2f}%")
-    print(f"Desvio Padrão da Acurácia: {std_acc:.4f}")
+    print(f"Acurácia Média Estimada: {mean_acc:.2f}%")
+    print(f"Desvio Padrão: {std_acc:.4f}")
+    print("--- Fim do Passo 2 ---")
 
 def main_production_workflow():
-    # --- HIPERPARÂMETROS GLOBAIS ---
     IMG_SIZE = (224, 224)
-    BATCH_SIZE = 12
+    BATCH_SIZE = 16
     MODEL_NAME = 'convnext_base'
     DATA_PATH = './Dataset_tratado2/vehicle/'
     EPOCHS = 15
     LEARNING_RATE = 0.0001
-    TEST_SPLIT_SIZE = 0.15  # Vamos guardar 15% para o teste final
+    TEST_SPLIT_SIZE = 0.15
+    N_SPLITS_KFold = 5
 
     # --- PASSO 1: DIVISÃO INICIAL EM DESENVOLVIMENTO (TRAIN+VAL) E TESTE ---
     print("--- PASSO 1: Dividindo o dataset em Desenvolvimento e Teste ---")
     base_dataset, num_classes = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_val_transforms(IMG_SIZE))
     indices = np.arange(len(base_dataset))
-
-    # CORREÇÃO: Converte a lista de alvos para um array NumPy
     targets = np.array(base_dataset.targets)
-
     class_names = base_dataset.classes
 
-    # Divide os índices em desenvolvimento (train_val) e teste
     dev_indices, test_indices = train_test_split(
         indices, test_size=TEST_SPLIT_SIZE, stratify=targets, random_state=42
     )
-
-    # Cria o subconjunto de teste (que será usado apenas no final)
-    val_full_dataset, _ = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_val_transforms(IMG_SIZE))
-    test_subset = Subset(val_full_dataset, test_indices)
-    test_loader = DataLoader(test_subset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8)
-
     print(f"Total de amostras: {len(base_dataset)}")
-    print(f"Amostras para Desenvolvimento (K-Fold e Treino Final): {len(dev_indices)}")
-    print(f"Amostras para Teste Final (Intocável): {len(test_indices)}")
+    print(f"Amostras para Desenvolvimento: {len(dev_indices)}")
+    print(f"Amostras para Teste Final: {len(test_indices)}")
 
-    # --- PASSO 2: (OPCIONAL) RODAR K-FOLD NO CONJUNTO DE DESENVOLVIMENTO ---
-    # Aqui você poderia chamar uma versão modificada do seu main_stratified_kfold
-    # que opera apenas nos 'dev_indices' para validar sua abordagem.
-    # Por simplicidade, vamos pular para o treino final.
+    # --- PASSO 2: RODAR K-FOLD NO CONJUNTO DE DESENVOLVIMENTO ---
+    run_stratified_kfold(
+        dev_indices=dev_indices,
+        all_targets=targets,
+        DATA_PATH=DATA_PATH,
+        IMG_SIZE=IMG_SIZE,
+        BATCH_SIZE=BATCH_SIZE,
+        MODEL_NAME=MODEL_NAME,
+        EPOCHS=EPOCHS,
+        LEARNING_RATE=LEARNING_RATE,
+        N_SPLITS=N_SPLITS_KFold
+    )
 
     # --- PASSO 3: TREINAR O MODELO FINAL NO CONJUNTO DE DESENVOLVIMENTO ---
-    print("\n--- PASSO 3: Treinando o modelo final no conjunto de Desenvolvimento ---")
+    print("\n--- PASSO 3: Treinando o modelo final em TODO o conjunto de Desenvolvimento ---")
 
-    # Usaremos uma pequena parte do conjunto de desenvolvimento para validação durante este treino final
-    # A operação targets[dev_indices] agora funciona porque 'targets' é um array NumPy
+    # Para o treino final, usamos todos os dev_indices para treinar e uma pequena parte para validar
     train_final_indices, val_final_indices = train_test_split(
         dev_indices, test_size=0.1, stratify=targets[dev_indices], random_state=42
     )
 
-    # Criamos os datasets com as transformações corretas
     train_full_dataset, _ = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_train_transforms(IMG_SIZE))
     final_train_subset = Subset(train_full_dataset, train_final_indices)
+
+    val_full_dataset, _ = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_val_transforms(IMG_SIZE))
     final_val_subset = Subset(val_full_dataset, val_final_indices)
 
     final_train_loader = DataLoader(final_train_subset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8)
@@ -339,6 +316,11 @@ def main_production_workflow():
 
     # --- PASSO 4: O EXAME FINAL - AVALIAR NO CONJUNTO DE TESTE ---
     print("\n--- PASSO 4: Avaliação final no conjunto de Teste ---")
+
+    # Criamos o DataLoader de teste com o subconjunto que guardamos no início
+    test_subset = Subset(val_full_dataset, test_indices)
+    test_loader = DataLoader(test_subset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8)
+
     final_model = define_model(MODEL_NAME, num_classes)
     if int(torch.__version__.split('.')[0]) >= 2:
         final_model = torch.compile(final_model)
@@ -350,6 +332,7 @@ def main_production_workflow():
     generate_roc_curves(final_model, test_loader, device, num_classes, class_names)
 
     print("\nProcesso de produção concluído.")
+
 
 if __name__ == '__main__':
     #main_percentage_split()
