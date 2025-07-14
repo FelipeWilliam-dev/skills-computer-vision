@@ -9,7 +9,6 @@ from torch.cuda.amp import autocast, GradScaler
 from timm import create_model
 from sklearn.model_selection import StratifiedKFold, train_test_split
 import numpy as np
-from datetime import datetime
 from tqdm import tqdm
 from sklearn.metrics import classification_report, confusion_matrix
 import seaborn as sns
@@ -106,11 +105,9 @@ def train_and_validate(model, train_loader, val_loader, device, epochs=10, lr=5e
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             if save_path:
-                # CORREÇÃO: Usando tqdm.write aqui também
                 tqdm.write(f"🎉 Nova melhor acurácia: {best_val_acc:.2f}%. Salvando modelo em '{save_path}'...")
                 torch.save(model.state_dict(), save_path)
 
-    # Este print está fora do loop principal de épocas, então pode ser um print normal.
     print('\n- - - - - Treinamento finalizado - - - - -')
 
     return best_val_acc
@@ -166,7 +163,6 @@ def generate_roc_curves(model, data_loader, device, num_classes, class_names):
     y_true = np.array(y_true)
     y_scores = np.array(y_scores)
 
-    # Binariza os rótulos para o cálculo da ROC multiclasse
     y_true_bin = nn.functional.one_hot(torch.from_numpy(y_true), num_classes=num_classes).numpy()
 
     fpr = dict()
@@ -177,7 +173,6 @@ def generate_roc_curves(model, data_loader, device, num_classes, class_names):
         fpr[i], tpr[i], _ = roc_curve(y_true_bin[:, i], y_scores[:, i])
         roc_auc[i] = auc(fpr[i], tpr[i])
 
-    # Plotar as curvas ROC
     plt.figure(figsize=(12, 8))
     colors = cycle(['aqua', 'darkorange', 'cornflowerblue', 'green', 'red', 'purple', 'brown', 'pink', 'gray'])
     for i, color in zip(range(num_classes), colors):
