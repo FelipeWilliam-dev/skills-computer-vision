@@ -250,5 +250,81 @@ def main_percentage_split():
 
     print("\nTreinamento concluído.")
 
+
+def main_stratified_kfold():
+    # --- HIPERPARÂMETROS ---
+    IMG_SIZE = (224, 224)
+    BATCH_SIZE = 12
+    MODEL_NAME = 'convnext_base'
+    DATA_PATH = './Dataset_tratado2/vehicle/'
+    EPOCHS = 15
+    LEARNING_RATE = 0.0001
+    N_SPLITS = 5  # Número de folds para a validação cruzada
+
+    # --- Carregando o dataset base para obter informações ---
+    print('- - - - - Carregando dataset base - - - - -')
+    # Carregamos uma vez para obter os targets para a divisão estratificada
+    base_dataset, num_classes = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_val_transforms(IMG_SIZE))
+    targets = base_dataset.targets
+    class_names = base_dataset.classes
+
+    # --- Inicializando o Stratified K-Fold ---
+    skf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=42)
+    fold_accuracies = []
+
+    # --- Configurando diretório para salvar os modelos ---
+    save_dir = 'Save_Models_KFold'
+    os.makedirs(save_dir, exist_ok=True)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Dispositivo usado: {device}")
+
+    # --- Loop de Validação Cruzada ---
+    for fold, (train_indices, val_indices) in enumerate(skf.split(np.arange(len(base_dataset)), targets)):
+        print(f"\n- - - - - [ FOLD {fold + 1}/{N_SPLITS} ] - - - - -")
+
+        # 1. Criar datasets com as transformações corretas PARA ESTE FOLD
+        train_full_dataset, _ = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_train_transforms(IMG_SIZE))
+        train_subset = Subset(train_full_dataset, train_indices)
+
+        val_full_dataset, _ = load_data_with_transforms(DATA_PATH, IMG_SIZE, get_val_transforms(IMG_SIZE))
+        val_subset = Subset(val_full_dataset, val_indices)
+
+        print(f"Amostras para Treino: {len(train_subset)}, Amostras para Validação: {len(val_subset)}")
+
+        # 2. Criar DataLoaders para este fold
+        train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=8)
+        val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True, num_workers=8)
+
+        # 3. Criar um NOVO modelo para cada fold
+        model = define_model(MODEL_NAME, num_classes)
+        if int(torch.__version__.split('.')[0]) >= 2:
+            model = torch.compile(model)
+
+        # 4. Treinar e validar o modelo para este fold
+        model_save_path = os.path.join(save_dir, f'best_model_fold_{fold + 1}.pth')
+
+        best_fold_acc = train_and_validate(
+            model,
+            train_loader,
+            val_loader,
+            device,
+            epochs=EPOCHS,
+            lr=LEARNING_RATE,
+            save_path=model_save_path
+        )
+        fold_accuracies.append(best_fold_acc)
+        print(f"Melhor acurácia para o Fold {fold + 1}: {best_fold_acc:.2f}%")
+
+    # --- Resultados Finais da Validação Cruzada ---
+    mean_acc = np.mean(fold_accuracies)
+    std_acc = np.std(fold_accuracies)
+
+    print(f"\n- - - - - Resultados Finais da Validação Cruzada ({N_SPLITS} folds) - - - - -")
+    print(f"Acurácias de cada fold: {[f'{acc:.2f}%' for acc in fold_accuracies]}")
+    print(f"Acurácia Média Final: {mean_acc:.2f}%")
+    print(f"Desvio Padrão da Acurácia: {std_acc:.4f}")
+
 if __name__ == '__main__':
-    main_percentage_split()
+    #main_percentage_split()
+    main_stratified_kfold()
